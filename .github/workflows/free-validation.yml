@@ -1,0 +1,50 @@
+name: Free AURA Builder Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/free-validation.yml'
+      - 'scripts/**'
+  pull_request:
+    paths:
+      - '.github/workflows/free-validation.yml'
+      - 'scripts/**'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v4
+
+      - name: Show runner capacity
+        run: |
+          set -euo pipefail
+          uname -a
+          df -h .
+          free -h
+          echo "This is a lightweight validation job, not a full Android OS build."
+
+      - name: Validate builder configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .github/workflows/build.yml
+          python3 - <<'PY'
+          from pathlib import Path
+          data = Path(".github/workflows/build.yml").read_text()
+          for token in ["lineage-21.0", "workflow_dispatch:", "upload-artifact", "self-hosted"]:
+              assert token in data, f"Missing required build workflow token: {token}"
+          print("Builder configuration checks passed")
+          PY
+
+      - name: Explain next build milestone
+        run: |
+          echo "AURA builder validation passed."
+          echo "Full LineageOS compilation remains blocked until a suitable free build runner and verified build target are available."
