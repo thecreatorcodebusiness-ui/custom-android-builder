@@ -1,0 +1,110 @@
+name: LineageOS 21.0 Android 14 Builder
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Full Android builds normally require a large self-hosted Linux runner.
+    # Configure a runner with these labels and >=400 GiB free disk space.
+    runs-on: [self-hosted, linux, x64, android-build]
+    timeout-minutes: 1440
+    env:
+      WORKDIR: ${{ github.workspace }}/android
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      USE_CCACHE: "1"
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v4
+
+      - name: Check build resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h .
+          free -h
+          available_kib=$(df -Pk . | awk 'NR==2 {print $4}')
+          if (( available_kib < 400 * 1024 * 1024 )); then
+            echo "::error::At least 400 GiB free disk space is required on this runner."
+            exit 1
+          fi
+
+      - name: Install dependencies (Ubuntu self-hosted runner)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git git-lfs gnupg gperf imagemagick lib32readline-dev lib32z1-dev \
+            libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
+            lzop pngcrush python3 python-is-python3 rsync schedtool squashfs-tools \
+            unzip wget xsltproc zip zlib1g-dev openjdk-17-jdk
+          git lfs install
+
+      - name: Install repo tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Sync LineageOS 21.0 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORKDIR"
+          cd "$WORKDIR"
+          "$HOME/bin/repo" init -u https://github.com/LineageOS/android.git -b lineage-21.0 --depth=1
+          "$HOME/bin/repo" sync -c --no-tags --no-clone-bundle -j4
+
+      - name: Select supported build target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORKDIR"
+          source build/envsetup.sh
+          # A valid device tree and vendor dependencies are required.
+          # The generic placeholder is intentionally not treated as a build target.
+          if [[ -z "${LINEAGE_LUNCH_TARGET:-}" ]]; then
+            echo "::error::Set LINEAGE_LUNCH_TARGET on the self-hosted runner (e.g. lineage_<device>-userdebug), and provide its supported device tree and vendor dependencies."
+            exit 1
+          fi
+          lunch "$LINEAGE_LUNCH_TARGET"
+
+      - name: Build LineageOS image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORKDIR"
+          source build/envsetup.sh
+          lunch "$LINEAGE_LUNCH_TARGET"
+          mka bacon -j"$(nproc)"
+
+      - name: Set custom display ID in generated build properties
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Do not rewrite signed images after compilation.
+          # The display ID must be set in product configuration BEFORE building.
+          echo "::warning::CustomOS_v1.0 display ID requires a product-level build configuration override before compilation."
+
+      - name: Upload image artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lineageos-21-images
+          path: |
+            android/out/target/product/**/*.img
+            android/out/target/product/**/*.zip
+          if-no-files-found: error
+          retention-days: 7
